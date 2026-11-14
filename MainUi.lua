@@ -188,6 +188,30 @@ local function buildSearchKey(name, description)
     return string.lower(tostring(name or ""))
 end
 
+local function snapSliderValue(value, minValue, maxValue, step)
+    if maxValue <= minValue then
+        return minValue
+    end
+    local clamped = math.clamp(value, minValue, maxValue)
+    if step and step > 0 then
+        local steps = math.floor((clamped - minValue) / step + 0.5)
+        local snapped = minValue + steps * step
+        snapped = tonumber(string.format("%.6g", snapped)) or snapped
+        return math.clamp(snapped, minValue, maxValue)
+    end
+    return clamped
+end
+
+local function sanitizeNumeric(text)
+    local sign = string.match(text, "^%-") or ""
+    local body = string.gsub(text, "[^%d%.]", "")
+    local dotIndex = string.find(body, "%.", 1)
+    if dotIndex then
+        body = string.sub(body, 1, dotIndex) .. string.gsub(string.sub(body, dotIndex + 1), "%.", "")
+    end
+    return sign .. body
+end
+
 function AstralHub:_clampPosition(target, position)
     local viewport = self.Overlay.AbsoluteSize
     local size = target == self.Panel and self._panelPixelSize or target.AbsoluteSize
@@ -253,6 +277,10 @@ end
 
 function AstralHub:_cancelDrags()
     self._activeDrag = nil
+    if self._activeSlider then
+        self._activeSlider.Input = nil
+        self._activeSlider = nil
+    end
     for _, state in ipairs(self._drags) do
         state.Input = nil
     end
@@ -298,7 +326,7 @@ function AstralHub:_makeDraggable(handle, target, activate)
     handle.Active = true
     connect(self, handle.InputBegan, function(input)
         local inputType = input.UserInputType
-        if self.Closed or not self.Visible or self.DialogShade.Visible or self._activeDrag
+        if self.Closed or not self.Visible or self.DialogShade.Visible or self._activeDrag or self._activeSlider
             or (inputType ~= Enum.UserInputType.MouseButton1 and inputType ~= Enum.UserInputType.Touch)
             or (target == self.Panel and self.Minimized)
             or (target == self.HubIcon and not self.Minimized) then
@@ -396,67 +424,6 @@ function AstralHub:CreateWindow(options)
     }, overlay)
     window.Panel = panel
     window.PanelScale = create("UIScale", { Scale = 1 }, panel)
-
-    local resizeHandle = create("TextButton", {
-        Name = "ResizeHandle",
-        AnchorPoint = Vector2.new(1, 1),
-        Position = UDim2.new(1, -4, 1, -4),
-        Size = UDim2.fromOffset(20, 20),
-        BackgroundColor3 = COLORS.panelRaised,
-        BackgroundTransparency = 0,
-        BorderSizePixel = 0,
-        Text = "◢",
-        TextColor3 = COLORS.violet,
-        TextSize = 14,
-        Font = Enum.Font.GothamBold,
-        AutoButtonColor = false,
-        ZIndex = 5,
-    }, panel)
-    local resizeState
-
-    connect(window, resizeHandle.InputBegan, function(input)
-        local inputType = input.UserInputType
-
-        if inputType ~= Enum.UserInputType.MouseButton1
-            and inputType ~= Enum.UserInputType.Touch then
-            return
-        end
-
-        resizeState = {
-            Input = input,
-            Start = input.Position,
-            Width = window._width,
-            Height = window._height,
-        }
-    end)
-
-    connect(window, UserInputService.InputChanged, function(input)
-        if not resizeState then
-            return
-        end
-
-        local start = resizeState.Input
-
-        if input.UserInputType == Enum.UserInputType.MouseMovement
-            or (start.UserInputType == Enum.UserInputType.Touch and input == start) then
-
-            local delta = input.Position - resizeState.Start
-            local scale = window.PanelScale.Scale
-
-            window._width = math.max(420, resizeState.Width + delta.X / scale)
-            window._height = math.max(300, resizeState.Height + delta.Y / scale)
-
-            window:_updateLayout()
-        end
-    end)
-
-    connect(window, UserInputService.InputEnded, function(input)
-        if resizeState and input == resizeState.Input then
-            resizeState = nil
-        end
-    end)
-
-    corner(resizeHandle, 4)
     corner(panel, 8)
     stroke(panel, COLORS.lineBright)
 
@@ -487,8 +454,8 @@ function AstralHub:CreateWindow(options)
         BackgroundTransparency = 1,
         Image = HUB_ICON_ASSET,
         ScaleType = Enum.ScaleType.Fit,
-        Size = UDim2.fromOffset(42, 42),
-        Position = UDim2.fromOffset(7, 6),
+        Size = UDim2.fromOffset(28, 28),
+        Position = UDim2.fromOffset(12, 10),
     }, dragHandle)
     local title = makeText(dragHandle, window.Title, 14, COLORS.white, Enum.Font.GothamBold)
     title.Position = UDim2.fromOffset(48, 7)
@@ -635,6 +602,21 @@ function AstralHub:CreateWindow(options)
         window:_updateLayout()
     end)
     connect(window, UserInputService.InputChanged, function(input)
+        local slider = window._activeSlider
+        if slider then
+            local start = slider.Input
+            if start and ((start.UserInputType == Enum.UserInputType.Touch and input == start)
+                or (start.UserInputType == Enum.UserInputType.MouseButton1
+                    and input.UserInputType == Enum.UserInputType.MouseMovement)) then
+                if input.UserInputState == Enum.UserInputState.Cancel then
+                    slider.Input = nil
+                    window._activeSlider = nil
+                else
+                    slider.Update(input.Position.X)
+                end
+            end
+            return
+        end
         local state = window._activeDrag
         if not state then
             return
@@ -651,6 +633,19 @@ function AstralHub:CreateWindow(options)
         end
     end)
     connect(window, UserInputService.InputEnded, function(input)
+        local slider = window._activeSlider
+        if slider then
+            local start = slider.Input
+            if start and (input == start or (start.UserInputType == Enum.UserInputType.MouseButton1
+                and input.UserInputType == Enum.UserInputType.MouseButton1)) then
+                if input.UserInputState ~= Enum.UserInputState.Cancel then
+                    slider.Update(input.Position.X)
+                end
+                slider.Input = nil
+                window._activeSlider = nil
+            end
+            return
+        end
         local state = window._activeDrag
         if not state then
             return
@@ -1079,6 +1074,813 @@ function AstralHub:AddTab(options)
         })
     end
 
+    function tab:AddParagraph(data)
+        if self.Window.Closed then
+            return
+        end
+        if type(data) == "string" then
+            data = { Title = "Paragraph", Content = data }
+        else
+            data = data or {}
+        end
+        local titleText = tostring(data.Title or data.Name or "Paragraph")
+        local contentText = tostring(data.Content or data.Description or data.Desc or data.Text or "")
+
+        local card = create("Frame", {
+            Name = "Paragraph",
+            BackgroundColor3 = COLORS.panelSoft,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 0, 44),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            LayoutOrder = #self.Elements + 1,
+        }, content)
+        corner(card, 6)
+        stroke(card, COLORS.line)
+        padding(card, 12, 12, 10, 10)
+        create("UIListLayout", {
+            Padding = UDim.new(0, 4),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }, card)
+
+        local titleLabel = makeText(card, titleText, 12, COLORS.white, Enum.Font.GothamBold)
+        titleLabel.Name = "Title"
+        titleLabel.Size = UDim2.new(1, 0, 0, 16)
+        titleLabel.AutomaticSize = Enum.AutomaticSize.Y
+        titleLabel.TextWrapped = true
+        titleLabel.TextTruncate = Enum.TextTruncate.None
+        titleLabel.LayoutOrder = 1
+
+        local contentLabel = makeText(card, contentText, 11, COLORS.muted, Enum.Font.Gotham)
+        contentLabel.Name = "Content"
+        contentLabel.Size = UDim2.new(1, 0, 0, 15)
+        contentLabel.AutomaticSize = Enum.AutomaticSize.Y
+        contentLabel.TextWrapped = true
+        contentLabel.TextTruncate = Enum.TextTruncate.None
+        contentLabel.Visible = contentText ~= ""
+        contentLabel.LayoutOrder = 2
+
+        local element = self:_addElement(card, {
+            Name = titleText,
+            Description = contentText,
+            TitleLabel = titleLabel,
+            ContentLabel = contentLabel,
+        })
+
+        local function updateSearch()
+            element.Name = titleLabel.Text
+            element.Description = contentLabel.Text
+            element._searchKey = buildSearchKey(titleLabel.Text, contentLabel.Text)
+            self.Window:_filterTab(self)
+        end
+
+        function element:SetTitle(newTitle)
+            if tab.Window.Closed then
+                return
+            end
+            titleLabel.Text = tostring(newTitle or "")
+            updateSearch()
+        end
+
+        function element:SetContent(newContent)
+            if tab.Window.Closed then
+                return
+            end
+            local text = tostring(newContent or "")
+            contentLabel.Text = text
+            contentLabel.Visible = text ~= ""
+            updateSearch()
+        end
+
+        function element:Set(newData)
+            if tab.Window.Closed then
+                return
+            end
+            if type(newData) == "table" then
+                if newData.Title ~= nil or newData.Name ~= nil then
+                    titleLabel.Text = tostring(newData.Title or newData.Name or "")
+                end
+                if newData.Content ~= nil or newData.Description ~= nil or newData.Desc ~= nil or newData.Text ~= nil then
+                    local text = tostring(newData.Content or newData.Description or newData.Desc or newData.Text or "")
+                    contentLabel.Text = text
+                    contentLabel.Visible = text ~= ""
+                end
+            else
+                local text = tostring(newData or "")
+                contentLabel.Text = text
+                contentLabel.Visible = text ~= ""
+            end
+            updateSearch()
+        end
+
+        function element:Get()
+            return {
+                Title = titleLabel.Text,
+                Content = contentLabel.Text,
+            }
+        end
+
+        return element
+    end
+
+    function tab:Paragraph(data)
+        return self:AddParagraph(data)
+    end
+
+    function tab:AddInput(data)
+        if self.Window.Closed then
+            return
+        end
+        data = data or {}
+        local isNumeric = data.Numeric == true or data.NumbersOnly == true
+        local finishedOnly = data.Finished ~= false and data.Realtime ~= true
+        local rawDefault = data.Default
+        if rawDefault == nil then
+            rawDefault = data.Value
+        end
+        if rawDefault == nil then
+            rawDefault = data.Text
+        end
+        local currentText = tostring(rawDefault ~= nil and rawDefault or "")
+        if isNumeric and currentText ~= "" then
+            currentText = sanitizeNumeric(currentText)
+        end
+
+        local controlData = {
+            Name = data.Name or data.Title or "Input",
+            Description = data.Description or data.Desc,
+            Callback = data.Callback,
+        }
+        local row = makeControl(self, controlData, "Input", 148)
+
+        local inputBox = create("TextBox", {
+            Name = "InputBox",
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.fromScale(1, 0.5),
+            Size = UDim2.fromOffset(136, 24),
+            BackgroundColor3 = COLORS.panel,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+            ClearTextOnFocus = data.ClearTextOnFocus == true,
+            MultiLine = false,
+            PlaceholderText = tostring(data.Placeholder or data.PlaceholderText or "Enter text..."),
+            PlaceholderColor3 = COLORS.dim,
+            Text = currentText,
+            TextColor3 = COLORS.white,
+            TextSize = 11,
+            Font = Enum.Font.Gotham,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+        }, row)
+        corner(inputBox, 5)
+        local inputStroke = stroke(inputBox, COLORS.line)
+        padding(inputBox, 8, 8, 0, 0)
+
+        local updatingText = false
+        local function setValue(newValue, skipCallback, enterPressed)
+            if self.Window.Closed then
+                return
+            end
+            local formatted = tostring(newValue ~= nil and newValue or "")
+            if isNumeric and formatted ~= "" then
+                formatted = sanitizeNumeric(formatted)
+            end
+            currentText = formatted
+            if inputBox.Text ~= formatted then
+                updatingText = true
+                inputBox.Text = formatted
+                updatingText = false
+            end
+            if not skipCallback then
+                invoke(data.Callback, currentText, enterPressed == true)
+            end
+        end
+
+        connect(self.Window, row.Activated, function()
+            if not self.Window.Closed then
+                inputBox:CaptureFocus()
+            end
+        end)
+        connect(self.Window, inputBox.Focused, function()
+            inputStroke.Color = COLORS.primary
+        end)
+        connect(self.Window, inputBox:GetPropertyChangedSignal("Text"), function()
+            if updatingText or self.Window.Closed then
+                return
+            end
+            local raw = inputBox.Text
+            if isNumeric then
+                local clean = sanitizeNumeric(raw)
+                if clean ~= raw then
+                    updatingText = true
+                    inputBox.Text = clean
+                    updatingText = false
+                    raw = clean
+                end
+            end
+            currentText = raw
+            if not finishedOnly then
+                invoke(data.Callback, currentText, false)
+            end
+        end)
+        connect(self.Window, inputBox.FocusLost, function(enterPressed)
+            inputStroke.Color = COLORS.line
+            if self.Window.Closed then
+                return
+            end
+            currentText = inputBox.Text
+            invoke(data.Callback, currentText, enterPressed)
+        end)
+
+        local element = self:_addElement(row, controlData)
+        element.Input = inputBox
+        element.TextBox = inputBox
+        element.Set = function(_, value, skipCallback)
+            setValue(value, skipCallback == true, false)
+        end
+        element.Get = function()
+            return currentText
+        end
+        return element
+    end
+
+    function tab:Input(data)
+        return self:AddInput(data)
+    end
+
+    function tab:AddTextbox(data)
+        return self:AddInput(data)
+    end
+
+    function tab:Textbox(data)
+        return self:AddInput(data)
+    end
+
+    function tab:AddSlider(data)
+        if self.Window.Closed then
+            return
+        end
+        data = data or {}
+        local minValue = numberOr(data.Min ~= nil and data.Min or data.Minimum, 0)
+        local maxValue = numberOr(data.Max ~= nil and data.Max or data.Maximum, 100)
+        if maxValue < minValue then
+            minValue, maxValue = maxValue, minValue
+        end
+        local step = math.max(0, numberOr(data.Increment or data.Step or data.Rounding, 1))
+        local suffix = tostring(data.Suffix or data.Unit or "")
+        local rawDefault = data.Default ~= nil and data.Default or data.Value
+        local currentValue = snapSliderValue(numberOr(rawDefault, minValue), minValue, maxValue, step)
+
+        local titleText = tostring(data.Name or data.Title or "Slider")
+        local descText = data.Description or data.Desc
+        local hasDescription = descText ~= nil and tostring(descText) ~= ""
+
+        local row = create("Frame", {
+            Name = "Slider",
+            BackgroundColor3 = COLORS.panelSoft,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 0, hasDescription and 70 or 54),
+            LayoutOrder = #self.Elements + 1,
+        }, content)
+        corner(row, 6)
+        stroke(row, COLORS.line)
+        padding(row, 12, 12, 9, 10)
+        bindHover(self.Window, row, COLORS.panelSoft, COLORS.hover)
+
+        local label = makeText(row, titleText, 12, COLORS.white, Enum.Font.GothamMedium)
+        label.Name = "Title"
+        label.Size = UDim2.new(1, -76, 0, 16)
+
+        local valueLabel = makeText(row, tostring(currentValue) .. suffix, 11, COLORS.violet, Enum.Font.GothamBold)
+        valueLabel.Name = "Value"
+        valueLabel.AnchorPoint = Vector2.new(1, 0)
+        valueLabel.Position = UDim2.fromScale(1, 0)
+        valueLabel.Size = UDim2.fromOffset(72, 16)
+        valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+        if hasDescription then
+            local description = makeText(row, descText, 11, COLORS.muted)
+            description.Name = "Description"
+            description.Position = UDim2.fromOffset(0, 18)
+            description.Size = UDim2.new(1, 0, 0, 14)
+        end
+
+        local trackButton = create("TextButton", {
+            Name = "SliderTrack",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Text = "",
+            AutoButtonColor = false,
+            Position = UDim2.fromOffset(0, hasDescription and 36 or 20),
+            Size = UDim2.new(1, 0, 0, 16),
+        }, row)
+
+        local track = create("Frame", {
+            Name = "Track",
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.fromScale(0, 0.5),
+            Size = UDim2.new(1, 0, 0, 6),
+            BackgroundColor3 = COLORS.panel,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+        }, trackButton)
+        corner(track, 3)
+        stroke(track, COLORS.line)
+
+        local initialAlpha = maxValue > minValue and math.clamp((currentValue - minValue) / (maxValue - minValue), 0, 1) or 0
+        local fill = create("Frame", {
+            Name = "Fill",
+            Size = UDim2.fromScale(initialAlpha, 1),
+            BackgroundColor3 = COLORS.primary,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+        }, track)
+        corner(fill, 3)
+
+        local knob = create("Frame", {
+            Name = "Knob",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(initialAlpha, 0.5),
+            Size = UDim2.fromOffset(12, 12),
+            BackgroundColor3 = COLORS.white,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+        }, track)
+        corner(knob, 6)
+        stroke(knob, COLORS.primary)
+
+        local function applyValue(newValue, skipCallback)
+            if self.Window.Closed then
+                return
+            end
+            local snapped = snapSliderValue(numberOr(newValue, currentValue), minValue, maxValue, step)
+            local alpha = maxValue > minValue and math.clamp((snapped - minValue) / (maxValue - minValue), 0, 1) or 0
+            local changed = snapped ~= currentValue
+            currentValue = snapped
+            fill.Size = UDim2.fromScale(alpha, 1)
+            knob.Position = UDim2.fromScale(alpha, 0.5)
+            valueLabel.Text = tostring(currentValue) .. suffix
+            if changed and not skipCallback then
+                invoke(data.Callback, currentValue)
+            end
+        end
+
+        local function updateFromX(pointerX)
+            local trackPos = track.AbsolutePosition.X
+            local trackWidth = track.AbsoluteSize.X
+            if trackWidth <= 0 then
+                return
+            end
+            local alpha = math.clamp((pointerX - trackPos) / trackWidth, 0, 1)
+            local raw = minValue + (maxValue - minValue) * alpha
+            applyValue(raw, false)
+        end
+
+        local sliderState = {
+            Input = nil,
+            Update = updateFromX,
+        }
+
+        connect(self.Window, trackButton.InputBegan, function(input)
+            local inputType = input.UserInputType
+            if self.Window.Closed or not self.Window.Visible or self.Window.DialogShade.Visible
+                or self.Window._activeDrag or self.Window._activeSlider
+                or (inputType ~= Enum.UserInputType.MouseButton1 and inputType ~= Enum.UserInputType.Touch) then
+                return
+            end
+            sliderState.Input = input
+            self.Window._activeSlider = sliderState
+            updateFromX(input.Position.X)
+        end)
+
+        local element = self:_addElement(row, {
+            Name = titleText,
+            Description = descText,
+            Callback = data.Callback,
+        })
+        element.Set = function(_, value, skipCallback)
+            if self.Window.Closed then
+                return
+            end
+            local previous = currentValue
+            applyValue(value, true)
+            if not skipCallback and currentValue ~= previous then
+                invoke(data.Callback, currentValue)
+            elseif not skipCallback then
+                invoke(data.Callback, currentValue)
+            end
+        end
+        element.Get = function()
+            return currentValue
+        end
+        element.SetMin = function(_, newMin)
+            minValue = numberOr(newMin, minValue)
+            if maxValue < minValue then
+                maxValue = minValue
+            end
+            applyValue(currentValue, true)
+        end
+        element.SetMax = function(_, newMax)
+            maxValue = numberOr(newMax, maxValue)
+            if minValue > maxValue then
+                minValue = maxValue
+            end
+            applyValue(currentValue, true)
+        end
+        return element
+    end
+
+    function tab:Slider(data)
+        return self:AddSlider(data)
+    end
+
+    function tab:AddDropdown(data)
+        if self.Window.Closed then
+            return
+        end
+        data = data or {}
+        local isMulti = data.Multi == true or data.MultiSelect == true or data.AllowMulti == true
+        local allowNone = data.AllowNone == true or isMulti
+        local titleText = tostring(data.Name or data.Title or "Dropdown")
+        local descText = data.Description or data.Desc
+        local hasDescription = descText ~= nil and tostring(descText) ~= ""
+        local headerHeight = hasDescription and 34 or 20
+        local closedHeight = headerHeight + 18
+
+        local optionsList = {}
+        local selectedMap = {}
+        local selectedSingle = nil
+        local isOpen = false
+        local optionPool = {}
+
+        local card = create("Frame", {
+            Name = "Dropdown",
+            BackgroundColor3 = COLORS.panelSoft,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+            Size = UDim2.new(1, 0, 0, closedHeight),
+            ClipsDescendants = true,
+            LayoutOrder = #self.Elements + 1,
+        }, content)
+        corner(card, 6)
+        local cardStroke = stroke(card, COLORS.line)
+        padding(card, 12, 12, 9, 9)
+
+        local header = create("TextButton", {
+            Name = "Header",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Text = "",
+            AutoButtonColor = false,
+            Size = UDim2.new(1, 0, 0, headerHeight),
+        }, card)
+
+        local label = makeText(header, titleText, 12, COLORS.white, Enum.Font.GothamMedium)
+        label.Name = "Title"
+        label.Size = UDim2.new(1, -148, 0, hasDescription and 16 or 20)
+
+        if hasDescription then
+            local description = makeText(header, descText, 11, COLORS.muted)
+            description.Name = "Description"
+            description.Position = UDim2.fromOffset(0, 18)
+            description.Size = UDim2.new(1, -148, 0, 14)
+        end
+
+        local selector = create("Frame", {
+            Name = "Selector",
+            AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.fromScale(1, 0.5),
+            Size = UDim2.fromOffset(136, 24),
+            BackgroundColor3 = COLORS.panel,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+        }, header)
+        corner(selector, 5)
+        local selectorStroke = stroke(selector, COLORS.line)
+
+        local selectedLabel = makeText(selector, "None", 11, COLORS.dim, Enum.Font.GothamMedium)
+        selectedLabel.Name = "Value"
+        selectedLabel.Position = UDim2.fromOffset(8, 0)
+        selectedLabel.Size = UDim2.new(1, -24, 1, 0)
+
+        local arrow = makeText(selector, "▾", 11, COLORS.muted, Enum.Font.GothamBold)
+        arrow.Name = "Arrow"
+        arrow.AnchorPoint = Vector2.new(1, 0.5)
+        arrow.Position = UDim2.new(1, -6, 0.5, 0)
+        arrow.Size = UDim2.fromOffset(12, 16)
+        arrow.TextXAlignment = Enum.TextXAlignment.Center
+
+        local listFrame = create("ScrollingFrame", {
+            Name = "OptionList",
+            Position = UDim2.fromOffset(0, headerHeight + 8),
+            Size = UDim2.new(1, 0, 0, 0),
+            BackgroundColor3 = COLORS.panel,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+            CanvasSize = ZERO_UDIM2,
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+            ScrollBarThickness = 2,
+            ScrollBarImageColor3 = COLORS.lineBright,
+            ScrollBarImageTransparency = 0,
+            ClipsDescendants = true,
+            Visible = false,
+        }, card)
+        corner(listFrame, 5)
+        stroke(listFrame, COLORS.line)
+        padding(listFrame, 4, 4, 4, 4)
+        create("UIListLayout", {
+            Padding = UDim.new(0, 3),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }, listFrame)
+
+        local function getMultiResult()
+            local result = {}
+            for _, opt in ipairs(optionsList) do
+                if selectedMap[opt] then
+                    table.insert(result, opt)
+                end
+            end
+            return result
+        end
+
+        local function updateOptionVisuals()
+            for index, opt in ipairs(optionsList) do
+                local item = optionPool[index]
+                if item then
+                    local active = isMulti and (selectedMap[opt] == true) or (selectedSingle == opt)
+                    item.Active = active
+                    item.Button.BackgroundColor3 = active and COLORS.panelRaised or COLORS.panel
+                    item.Text.TextColor3 = active and COLORS.white or COLORS.muted
+                    item.Check.Visible = active
+                end
+            end
+
+            if isMulti then
+                local chosen = getMultiResult()
+                if #chosen > 0 then
+                    selectedLabel.Text = table.concat(chosen, ", ")
+                    selectedLabel.TextColor3 = COLORS.violet
+                else
+                    selectedLabel.Text = "None"
+                    selectedLabel.TextColor3 = COLORS.dim
+                end
+            else
+                if selectedSingle ~= nil then
+                    selectedLabel.Text = tostring(selectedSingle)
+                    selectedLabel.TextColor3 = COLORS.violet
+                else
+                    selectedLabel.Text = "None"
+                    selectedLabel.TextColor3 = COLORS.dim
+                end
+            end
+        end
+
+        local function updateDropdownLayout()
+            if isOpen and #optionsList > 0 then
+                local visibleCount = math.min(#optionsList, 5)
+                local listHeight = visibleCount * 26 + (visibleCount - 1) * 3 + 8
+                listFrame.Size = UDim2.new(1, 0, 0, listHeight)
+                listFrame.Visible = true
+                card.Size = UDim2.new(1, 0, 0, closedHeight + listHeight + 8)
+                arrow.Text = "▴"
+                selectorStroke.Color = COLORS.primary
+                cardStroke.Color = COLORS.lineBright
+            else
+                listFrame.Visible = false
+                card.Size = UDim2.new(1, 0, 0, closedHeight)
+                arrow.Text = "▾"
+                selectorStroke.Color = COLORS.line
+                cardStroke.Color = COLORS.line
+            end
+        end
+
+        local function setOpen(openState)
+            if self.Window.Closed then
+                return
+            end
+            isOpen = openState == true and #optionsList > 0
+            updateDropdownLayout()
+        end
+
+        local function acquireOptionItem(index)
+            local item = optionPool[index]
+            if item then
+                item.Button.Visible = true
+                return item
+            end
+
+            local optButton = create("TextButton", {
+                Name = "Option" .. index,
+                BackgroundColor3 = COLORS.panel,
+                BackgroundTransparency = 0,
+                BorderSizePixel = 0,
+                Text = "",
+                AutoButtonColor = false,
+                Size = UDim2.new(1, 0, 0, 26),
+                LayoutOrder = index,
+            }, listFrame)
+            corner(optButton, 4)
+
+            local optText = makeText(optButton, "", 11, COLORS.muted, Enum.Font.GothamMedium)
+            optText.Name = "Label"
+            optText.Position = UDim2.fromOffset(8, 0)
+            optText.Size = UDim2.new(1, -28, 1, 0)
+
+            local optCheck = makeText(optButton, "✓", 11, COLORS.violet, Enum.Font.GothamBold)
+            optCheck.Name = "Check"
+            optCheck.AnchorPoint = Vector2.new(1, 0.5)
+            optCheck.Position = UDim2.new(1, -8, 0.5, 0)
+            optCheck.Size = UDim2.fromOffset(12, 16)
+            optCheck.TextXAlignment = Enum.TextXAlignment.Right
+            optCheck.Visible = false
+
+            item = {
+                Button = optButton,
+                Text = optText,
+                Check = optCheck,
+                Value = nil,
+                Active = false,
+            }
+            optionPool[index] = item
+
+            bindHover(self.Window, optButton, function()
+                return item.Active and COLORS.panelRaised or COLORS.panel
+            end, COLORS.hover)
+
+            connect(self.Window, optButton.Activated, function()
+                if self.Window.Closed or item.Value == nil then
+                    return
+                end
+                local val = item.Value
+                if isMulti then
+                    if selectedMap[val] then
+                        selectedMap[val] = nil
+                    else
+                        selectedMap[val] = true
+                    end
+                    updateOptionVisuals()
+                    invoke(data.Callback, getMultiResult())
+                else
+                    if selectedSingle == val and allowNone then
+                        selectedSingle = nil
+                    else
+                        selectedSingle = val
+                    end
+                    updateOptionVisuals()
+                    setOpen(false)
+                    invoke(data.Callback, selectedSingle)
+                end
+            end)
+
+            return item
+        end
+
+        local function setSelection(newValue, skipCallback)
+            if self.Window.Closed then
+                return
+            end
+            if isMulti then
+                table.clear(selectedMap)
+                if type(newValue) == "table" then
+                    for key, val in pairs(newValue) do
+                        if type(key) == "number" then
+                            local str = tostring(val)
+                            if table.find(optionsList, str) then
+                                selectedMap[str] = true
+                            end
+                        elseif val == true then
+                            local str = tostring(key)
+                            if table.find(optionsList, str) then
+                                selectedMap[str] = true
+                            end
+                        end
+                    end
+                elseif newValue ~= nil and newValue ~= "" then
+                    local str = tostring(newValue)
+                    if table.find(optionsList, str) then
+                        selectedMap[str] = true
+                    end
+                end
+                updateOptionVisuals()
+                if not skipCallback then
+                    invoke(data.Callback, getMultiResult())
+                end
+            else
+                local resolved = nil
+                if newValue ~= nil and newValue ~= "" then
+                    local str = tostring(newValue)
+                    if table.find(optionsList, str) then
+                        resolved = str
+                    end
+                end
+                if resolved == nil and not allowNone and #optionsList > 0 then
+                    resolved = optionsList[1]
+                end
+                selectedSingle = resolved
+                updateOptionVisuals()
+                if not skipCallback then
+                    invoke(data.Callback, selectedSingle)
+                end
+            end
+        end
+
+        local function rebuildOptions(rawOptions, newDefault, skipCallback)
+            table.clear(optionsList)
+            if type(rawOptions) == "table" then
+                for _, opt in ipairs(rawOptions) do
+                    if opt ~= nil then
+                        table.insert(optionsList, tostring(opt))
+                    end
+                end
+            end
+
+            for index, opt in ipairs(optionsList) do
+                local item = acquireOptionItem(index)
+                item.Value = opt
+                item.Text.Text = opt
+            end
+            for index = #optionsList + 1, #optionPool do
+                optionPool[index].Button.Visible = false
+                optionPool[index].Value = nil
+            end
+
+            if newDefault ~= nil then
+                setSelection(newDefault, skipCallback)
+            elseif isMulti then
+                for key in pairs(selectedMap) do
+                    if not table.find(optionsList, key) then
+                        selectedMap[key] = nil
+                    end
+                end
+                updateOptionVisuals()
+            else
+                if selectedSingle == nil or not table.find(optionsList, selectedSingle) then
+                    selectedSingle = (not allowNone and #optionsList > 0) and optionsList[1] or nil
+                end
+                updateOptionVisuals()
+            end
+
+            if isOpen and #optionsList == 0 then
+                isOpen = false
+            end
+            updateDropdownLayout()
+        end
+
+        connect(self.Window, header.Activated, function()
+            setOpen(not isOpen)
+        end)
+        connect(self.Window, header.MouseEnter, function()
+            if not self.Window.Closed then
+                card.BackgroundColor3 = COLORS.hover
+            end
+        end)
+        connect(self.Window, header.MouseLeave, function()
+            if not self.Window.Closed then
+                card.BackgroundColor3 = COLORS.panelSoft
+            end
+        end)
+
+        local initialOptions = data.Options or data.Values or data.List or data.Items or {}
+        local initialDefault = data.Default ~= nil and data.Default or data.Value
+        rebuildOptions(initialOptions, initialDefault, true)
+
+        local element = self:_addElement(card, {
+            Name = titleText,
+            Description = descText,
+            Callback = data.Callback,
+        })
+        element.Set = function(_, value, skipCallback)
+            setSelection(value, skipCallback == true)
+        end
+        element.Get = function()
+            if isMulti then
+                return getMultiResult()
+            end
+            return selectedSingle
+        end
+        element.Refresh = function(_, newOptions, newDefault, skipCallback)
+            if self.Window.Closed then
+                return
+            end
+            rebuildOptions(newOptions, newDefault, skipCallback ~= false)
+        end
+        element.SetOptions = element.Refresh
+        element.Open = function()
+            setOpen(true)
+        end
+        element.Close = function()
+            setOpen(false)
+        end
+        return element
+    end
+
+    function tab:Dropdown(data)
+        return self:AddDropdown(data)
+    end
+
     function tab:Section(text)
         local label = self:AddLabel(text or "Section")
         if label then
@@ -1298,16 +2100,4 @@ function AstralHub:Destroy(fromGui)
     end
 end
 
-
-
-local Window = AstralHub:CreateWindow({
-    Title = "AstralHub",
-    Subtitle = "Version 2.0"
-})
-
-local Main = Window:AddTab({
-    Name = "Main",
-    Icon = "🏠"
-})
-
-Main:AddLabel("AstralHub 2.0 Loaded")
+return AstralHub
