@@ -396,6 +396,67 @@ function AstralHub:CreateWindow(options)
     }, overlay)
     window.Panel = panel
     window.PanelScale = create("UIScale", { Scale = 1 }, panel)
+
+    local resizeHandle = create("TextButton", {
+        Name = "ResizeHandle",
+        AnchorPoint = Vector2.new(1, 1),
+        Position = UDim2.new(1, -4, 1, -4),
+        Size = UDim2.fromOffset(20, 20),
+        BackgroundColor3 = COLORS.panelRaised,
+        BackgroundTransparency = 0,
+        BorderSizePixel = 0,
+        Text = "◢",
+        TextColor3 = COLORS.violet,
+        TextSize = 14,
+        Font = Enum.Font.GothamBold,
+        AutoButtonColor = false,
+        ZIndex = 5,
+    }, panel)
+    local resizeState
+
+    connect(window, resizeHandle.InputBegan, function(input)
+        local inputType = input.UserInputType
+
+        if inputType ~= Enum.UserInputType.MouseButton1
+            and inputType ~= Enum.UserInputType.Touch then
+            return
+        end
+
+        resizeState = {
+            Input = input,
+            Start = input.Position,
+            Width = window._width,
+            Height = window._height,
+        }
+    end)
+
+    connect(window, UserInputService.InputChanged, function(input)
+        if not resizeState then
+            return
+        end
+
+        local start = resizeState.Input
+
+        if input.UserInputType == Enum.UserInputType.MouseMovement
+            or (start.UserInputType == Enum.UserInputType.Touch and input == start) then
+
+            local delta = input.Position - resizeState.Start
+            local scale = window.PanelScale.Scale
+
+            window._width = math.max(420, resizeState.Width + delta.X / scale)
+            window._height = math.max(300, resizeState.Height + delta.Y / scale)
+
+            window:_updateLayout()
+        end
+    end)
+
+    connect(window, UserInputService.InputEnded, function(input)
+        if resizeState and input == resizeState.Input then
+            resizeState = nil
+        end
+    end)
+
+    corner(resizeHandle, 4)
     corner(panel, 8)
     stroke(panel, COLORS.lineBright)
 
@@ -426,8 +487,8 @@ function AstralHub:CreateWindow(options)
         BackgroundTransparency = 1,
         Image = HUB_ICON_ASSET,
         ScaleType = Enum.ScaleType.Fit,
-        Size = UDim2.fromOffset(28, 28),
-        Position = UDim2.fromOffset(12, 10),
+        Size = UDim2.fromOffset(42, 42),
+        Position = UDim2.fromOffset(7, 6),
     }, dragHandle)
     local title = makeText(dragHandle, window.Title, 14, COLORS.white, Enum.Font.GothamBold)
     title.Position = UDim2.fromOffset(48, 7)
@@ -1237,4 +1298,16 @@ function AstralHub:Destroy(fromGui)
     end
 end
 
-return AstralHub
+
+
+local Window = AstralHub:CreateWindow({
+    Title = "AstralHub",
+    Subtitle = "Version 2.0"
+})
+
+local Main = Window:AddTab({
+    Name = "Main",
+    Icon = "🏠"
+})
+
+Main:AddLabel("AstralHub 2.0 Loaded")
